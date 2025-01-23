@@ -1,6 +1,7 @@
 package test
 
 import (
+	"encoding/json"
 	"github.com/HiChen85/googg"
 	"reflect"
 	"testing"
@@ -59,4 +60,24 @@ func TestReverseString(t *testing.T) {
 			}
 		})
 	}
+}
+
+func FuzzReverse(f *testing.F) {
+	// Add initial seed corpus
+	f.Add(`["a", "b", "c"]`)
+	f.Add(`["Hello", "world"]`)
+	f.Add(`["1", "2", "3"]`)
+
+	f.Fuzz(func(t *testing.T, orig string) {
+		var origSlice []string
+		if err := json.Unmarshal([]byte(orig), &origSlice); err != nil {
+			t.Skip("Invalid input")
+		}
+
+		rev := googg.Reverse(origSlice)
+		doubleRev := googg.Reverse(rev)
+		if !reflect.DeepEqual(origSlice, doubleRev) {
+			t.Fatalf("expected %v, got %v", origSlice, doubleRev)
+		}
+	})
 }

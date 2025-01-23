@@ -1,7 +1,7 @@
 package googg
 
 type SupportedReverseType interface {
-	string | int
+	string | int | byte | float64
 }
 
 // Reverse 使用泛型定义一个反转切片的函数
