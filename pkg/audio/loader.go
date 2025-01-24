@@ -23,12 +23,12 @@ func FromFile(path string, format ...string) (*AudioSegment, error) {
 	}
 
 	// 使用转换器加载音频文件
-	samples, sampleRate, channels, bitDepth, err := converter.LoadAudioFile(path, audioFormat)
+	audio, err := converter.LoadAudioFile(path, audioFormat)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load audio file: %w", err)
 	}
 
-	return NewAudioSegment(samples, sampleRate, channels, bitDepth)
+	return NewAudioSegment(audio.Samples, audio.SampleRate, audio.Channels, audio.BitDepth)
 }
 
 // FromMP3 从MP3文件加载音频
