@@ -9,6 +9,14 @@ import (
 	"strconv"
 )
 
+// AudioData 音频数据结构
+type AudioData struct {
+	Samples    []float64 // 音频样本数据
+	SampleRate int       // 采样率
+	Channels   int       // 声道数
+	BitDepth   int       // 位深度
+}
+
 // FFProbeOutput ffprobe输出的JSON结构
 type FFProbeOutput struct {
 	Streams []struct {
@@ -20,11 +28,11 @@ type FFProbeOutput struct {
 }
 
 // LoadAudioFile 从文件加载音频数据
-func LoadAudioFile(path string, format string) ([]float64, int, int, int, error) {
+func LoadAudioFile(path string, format string) (*AudioData, error) {
 	// 创建临时WAV文件
 	tempDir, err := os.MkdirTemp("", "goudub")
 	if err != nil {
-		return nil, 0, 0, 0, fmt.Errorf("failed to create temp directory: %w", err)
+		return nil, fmt.Errorf("failed to create temp directory: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
 
@@ -62,7 +70,7 @@ func LoadAudioFile(path string, format string) ([]float64, int, int, int, error)
 			"-f", "wav",
 			wavPath)
 		if err := cmd.Run(); err != nil {
-			return nil, 0, 0, 0, fmt.Errorf("failed to convert audio to wav: %w", err)
+			return nil, fmt.Errorf("failed to convert audio to wav: %w", err)
 		}
 	}
 
@@ -70,13 +78,13 @@ func LoadAudioFile(path string, format string) ([]float64, int, int, int, error)
 	infoCmd = exec.Command("ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", wavPath)
 	output, err = infoCmd.Output()
 	if err != nil {
-		return nil, 0, 0, 0, fmt.Errorf("failed to get audio info: %w", err)
+		return nil, fmt.Errorf("failed to get audio info: %w", err)
 	}
 
 	// 解析ffprobe输出的JSON数据
 	var probeData FFProbeOutput
 	if err := json.Unmarshal(output, &probeData); err != nil {
-		return nil, 0, 0, 0, fmt.Errorf("failed to parse audio info: %w", err)
+		return nil, fmt.Errorf("failed to parse audio info: %w", err)
 	}
 
 	// 获取音频流信息
@@ -95,7 +103,7 @@ func LoadAudioFile(path string, format string) ([]float64, int, int, int, error)
 	}
 
 	if audioStream == nil {
-		return nil, 0, 0, 0, fmt.Errorf("no audio stream found")
+		return nil, fmt.Errorf("no audio stream found")
 	}
 
 	// 解析音频参数
@@ -119,7 +127,7 @@ func LoadAudioFile(path string, format string) ([]float64, int, int, int, error)
 	// 读取WAV文件数据
 	data, err := os.ReadFile(wavPath)
 	if err != nil {
-		return nil, 0, 0, 0, fmt.Errorf("failed to read wav file: %w", err)
+		return nil, fmt.Errorf("failed to read wav file: %w", err)
 	}
 
 	// 计算每个样本的字节数
@@ -146,21 +154,135 @@ func LoadAudioFile(path string, format string) ([]float64, int, int, int, error)
 			sample = int32(data[i*4]) | int32(data[i*4+1])<<8 | int32(data[i*4+2])<<16 | int32(data[i*4+3])<<24
 			samples[i] = float64(sample) / 2147483648.0
 		default:
-			return nil, 0, 0, 0, fmt.Errorf("unsupported bit depth: %d", bitDepth)
+			return nil, fmt.Errorf("unsupported bit depth: %d", bitDepth)
 		}
 	}
 
-	return samples, sampleRate, channels, bitDepth, nil
+	return &AudioData{
+		Samples:    samples,
+		SampleRate: sampleRate,
+		Channels:   channels,
+		BitDepth:   bitDepth,
+	}, nil
+}
+
+// LoadAudioFileWithParams 从文件加载音频数据，并按指定参数转换
+func LoadAudioFileWithParams(path string, format string, targetRate int, targetChannels int, targetDepth int) (*AudioData, error) {
+	// 创建临时WAV文件
+	tempDir, err := os.MkdirTemp("", "goudub")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	wavPath := filepath.Join(tempDir, "temp.wav")
+
+	// 使用 ffmpeg 转换音频文件，并进行重采样
+	cmd := exec.Command("ffmpeg", "-i", path,
+		"-ar", strconv.Itoa(targetRate), // 设置目标采样率
+		"-ac", strconv.Itoa(targetChannels), // 设置目标声道数
+		"-acodec", fmt.Sprintf("pcm_s%dle", targetDepth), // 设置目标位深度
+		"-f", "wav",
+		wavPath)
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("failed to convert audio to wav: %w", err)
+	}
+
+	// 读取WAV文件信息
+	infoCmd := exec.Command("ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", wavPath)
+	output, err := infoCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get audio info: %w", err)
+	}
+
+	// 解析ffprobe输出的JSON数据
+	var probeData FFProbeOutput
+	if err := json.Unmarshal(output, &probeData); err != nil {
+		return nil, fmt.Errorf("failed to parse audio info: %w", err)
+	}
+
+	// 获取音频流信息
+	var audioStream *struct {
+		CodecType  string `json:"codec_type"`
+		SampleRate string `json:"sample_rate"`
+		Channels   int    `json:"channels"`
+		BitsPerRaw string `json:"bits_per_raw_sample"`
+	}
+
+	for i := range probeData.Streams {
+		if probeData.Streams[i].CodecType == "audio" {
+			audioStream = &probeData.Streams[i]
+			break
+		}
+	}
+
+	if audioStream == nil {
+		return nil, fmt.Errorf("no audio stream found")
+	}
+
+	// 解析音频参数
+	sampleRate, err := strconv.Atoi(audioStream.SampleRate)
+	if err != nil {
+		sampleRate = targetRate // 使用目标采样率
+	}
+
+	channels := audioStream.Channels
+	if channels <= 0 {
+		channels = targetChannels // 使用目标声道数
+	}
+
+	bitDepth := targetDepth // 使用目标位深度
+
+	// 读取WAV文件数据
+	data, err := os.ReadFile(wavPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read wav file: %w", err)
+	}
+
+	// 计算每个样本的字节数
+	bytesPerSample := bitDepth / 8
+	samples := make([]float64, len(data)/bytesPerSample)
+
+	// 将字节数据转换为float64样本
+	for i := 0; i < len(samples); i++ {
+		var sample int32
+		switch bitDepth {
+		case 8:
+			sample = int32(data[i]) - 128
+			samples[i] = float64(sample) / 128.0
+		case 16:
+			sample = int32(int16(data[i*2]) | int16(data[i*2+1])<<8)
+			samples[i] = float64(sample) / 32768.0
+		case 24:
+			sample = int32(data[i*3]) | int32(data[i*3+1])<<8 | int32(data[i*3+2])<<16
+			if sample&0x800000 != 0 {
+				sample |= ^0xffffff
+			}
+			samples[i] = float64(sample) / 8388608.0
+		case 32:
+			sample = int32(data[i*4]) | int32(data[i*4+1])<<8 | int32(data[i*4+2])<<16 | int32(data[i*4+3])<<24
+			samples[i] = float64(sample) / 2147483648.0
+		default:
+			return nil, fmt.Errorf("unsupported bit depth: %d", bitDepth)
+		}
+	}
+
+	return &AudioData{
+		Samples:    samples,
+		SampleRate: sampleRate,
+		Channels:   channels,
+		BitDepth:   bitDepth,
+	}, nil
 }
 
 // SaveAudioFile 将音频数据保存到文件
-func SaveAudioFile(samples []float64, sampleRate, channels, bitDepth int, path string, format string) error {
+func SaveAudioFile(audio *AudioData, path string, format string) error {
 	// 验证位深度
-	switch bitDepth {
+	switch audio.BitDepth {
 	case 8, 16, 24, 32:
 		// 支持的位深度
 	default:
-		return fmt.Errorf("unsupported bit depth: %d", bitDepth)
+		return fmt.Errorf("unsupported bit depth: %d", audio.BitDepth)
 	}
 
 	// 创建临时WAV文件
@@ -180,15 +302,15 @@ func SaveAudioFile(samples []float64, sampleRate, channels, bitDepth int, path s
 	defer f.Close()
 
 	// 计算数据大小
-	dataSize := len(samples) * bitDepth / 8
+	dataSize := len(audio.Samples) * audio.BitDepth / 8
 
 	// 写入WAV文件头
-	if err := writeWAVHeader(f, sampleRate, channels, bitDepth, dataSize); err != nil {
+	if err := writeWAVHeader(f, audio.SampleRate, audio.Channels, audio.BitDepth, dataSize); err != nil {
 		return fmt.Errorf("failed to write wav header: %w", err)
 	}
 
 	// 写入音频数据
-	if err := writeWAVData(f, samples, bitDepth); err != nil {
+	if err := writeWAVData(f, audio.Samples, audio.BitDepth); err != nil {
 		return fmt.Errorf("failed to write wav data: %w", err)
 	}
 
@@ -218,8 +340,8 @@ func SaveAudioFile(samples []float64, sampleRate, channels, bitDepth int, path s
 			"-i", wavPath,
 			"-c:a", "libmp3lame",
 			"-b:a", "320k", // 使用高比特率
-			"-ar", strconv.Itoa(sampleRate),
-			"-ac", strconv.Itoa(channels),
+			"-ar", strconv.Itoa(audio.SampleRate),
+			"-ac", strconv.Itoa(audio.Channels),
 			path)
 	case "ogg":
 		cmd = exec.Command("ffmpeg", "-y",
@@ -227,16 +349,16 @@ func SaveAudioFile(samples []float64, sampleRate, channels, bitDepth int, path s
 			"-i", wavPath,
 			"-c:a", "libvorbis",
 			"-q:a", "10", // 使用高质量设置
-			"-ar", strconv.Itoa(sampleRate),
-			"-ac", strconv.Itoa(channels),
+			"-ar", strconv.Itoa(audio.SampleRate),
+			"-ac", strconv.Itoa(audio.Channels),
 			path)
 	default:
 		cmd = exec.Command("ffmpeg", "-y",
 			"-f", "wav",
 			"-i", wavPath,
-			"-acodec", "pcm_s"+strconv.Itoa(bitDepth)+"le",
-			"-ar", strconv.Itoa(sampleRate),
-			"-ac", strconv.Itoa(channels),
+			"-acodec", "pcm_s"+strconv.Itoa(audio.BitDepth)+"le",
+			"-ar", strconv.Itoa(audio.SampleRate),
+			"-ac", strconv.Itoa(audio.Channels),
 			"-f", format,
 			path)
 	}
